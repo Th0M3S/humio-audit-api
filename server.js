@@ -3,7 +3,7 @@ const cors = require('cors');
 const rateLimit = require('express-rate-limit');
 
 const app = express();
-app.set('trust proxy', 1); // Fix Railway X-Forwarded-For
+app.set('trust proxy', 1);
 const PORT = process.env.PORT || 3000;
 
 const allowedOrigins = (process.env.ALLOWED_ORIGINS || '*').split(',');
@@ -20,15 +20,34 @@ const limiter = rateLimit({
   message: { error: 'Limite atteinte. Réessayez dans une heure.' }
 });
 
-const PROMPT = `Expert web pour Humio (agence TPE/artisans Normandie). Analyse le site fourni. Réponds UNIQUEMENT en JSON valide, aucun texte avant ou après :
-{"nom_entreprise":"string","secteur":"string","score_global":42,"resume":"2-3 phrases sur les problèmes principaux","criteres":[{"id":"seo","nom":"Référencement Google","score":30,"etat":"critique","problemes":["pb1","pb2"],"impact":"impact chiffré","recommandation":"solution"},{"id":"google_business","nom":"Fiche Google Business","score":25,"etat":"critique","problemes":["pb1"],"impact":"impact","recommandation":"solution"},{"id":"mobile","nom":"Compatibilité mobile","score":40,"etat":"faible","problemes":["pb1"],"impact":"impact","recommandation":"solution"},{"id":"design","nom":"Design et modernité","score":25,"etat":"critique","problemes":["pb1","pb2"],"impact":"impact","recommandation":"solution"},{"id":"contenu","nom":"Contenu et messages","score":50,"etat":"moyen","problemes":["pb1"],"impact":"impact","recommandation":"solution"},{"id":"confiance","nom":"Éléments de confiance","score":20,"etat":"critique","problemes":["pb1","pb2"],"impact":"impact","recommandation":"solution"}],"points_positifs":["point"],"top_3_actions":["action1","action2","action3"],"potentiel":"phrase motivante"}
+const PROMPT = `Expert web pour Humio (agence TPE/artisans Normandie). Analyse le site fourni.
+IMPORTANT : réponds avec UNIQUEMENT l'objet JSON brut. Pas de balises markdown, pas de backticks, pas d'explication, juste le JSON.
+Format attendu :
+{"nom_entreprise":"string","secteur":"string","score_global":42,"resume":"2-3 phrases","criteres":[{"id":"seo","nom":"Référencement Google","score":30,"etat":"critique","problemes":["pb1","pb2"],"impact":"impact chiffré","recommandation":"solution"},{"id":"google_business","nom":"Fiche Google Business","score":25,"etat":"critique","problemes":["pb1"],"impact":"impact","recommandation":"solution"},{"id":"mobile","nom":"Compatibilité mobile","score":40,"etat":"faible","problemes":["pb1"],"impact":"impact","recommandation":"solution"},{"id":"design","nom":"Design et modernité","score":25,"etat":"critique","problemes":["pb1","pb2"],"impact":"impact","recommandation":"solution"},{"id":"contenu","nom":"Contenu et messages","score":50,"etat":"moyen","problemes":["pb1"],"impact":"impact","recommandation":"solution"},{"id":"confiance","nom":"Éléments de confiance","score":20,"etat":"critique","problemes":["pb1","pb2"],"impact":"impact","recommandation":"solution"}],"points_positifs":["point"],"top_3_actions":["action1","action2","action3"],"potentiel":"phrase motivante"}
 États: critique=0-30, faible=31-50, moyen=51-70, bon=71-100.`;
 
 function extractJSON(text) {
-  const clean = text.replace(/```json\s*/gi, '').replace(/```\s*/g, '').trim();
-  const s = clean.indexOf('{'), e = clean.lastIndexOf('}');
-  if (s < 0 || e < 0) return null;
-  try { return JSON.parse(clean.slice(s, e + 1)); } catch { return null; }
+  // Stratégie 1 : JSON direct
+  try { return JSON.parse(text.trim()); } catch {}
+
+  // Stratégie 2 : supprimer les balises markdown
+  const clean = text
+    .replace(/^```json\s*/m, '')
+    .replace(/^```\s*/m, '')
+    .replace(/\s*```\s*$/m, '')
+    .trim();
+  try { return JSON.parse(clean); } catch {}
+
+  // Stratégie 3 : extraire entre les premières { et dernières }
+  const s = text.indexOf('{');
+  const e = text.lastIndexOf('}');
+  if (s >= 0 && e > s) {
+    try { return JSON.parse(text.slice(s, e + 1)); } catch (err) {
+      console.error('[PARSE ERROR]', err.message);
+    }
+  }
+
+  return null;
 }
 
 app.post('/api/analyze', limiter, async (req, res) => {
@@ -51,11 +70,11 @@ app.post('/api/analyze', limiter, async (req, res) => {
       },
       body: JSON.stringify({
         model: 'claude-sonnet-4-6',
-        max_tokens: 1500,
+        max_tokens: 2000,
         system: PROMPT,
         messages: [{
           role: 'user',
-          content: `Analyse ce site : ${cleanUrl}. Génère un diagnostic réaliste basé sur ce que tu sais de ce site ou de ce type d'entreprise. JSON uniquement.`
+          content: `Analyse ce site : ${cleanUrl}. Rappel : réponds avec l'objet JSON uniquement, sans markdown ni backticks.`
         }]
       })
     });
@@ -63,18 +82,20 @@ app.post('/api/analyze', limiter, async (req, res) => {
     if (!response.ok) {
       const err = await response.text();
       console.error('[API ERROR]', err);
-      return res.status(500).json({ error: `Erreur Anthropic ${response.status}` });
+      return res.status(500).json({ error: `Erreur API ${response.status}` });
     }
 
     const data = await response.json();
     const text = (data.content || []).filter(b => b.type === 'text').map(b => b.text).join('');
-    const result = extractJSON(text);
+    console.log('[RAW RESPONSE]', text.slice(0, 100));
 
+    const result = extractJSON(text);
     if (!result) {
-      console.error('[JSON ERROR] Reçu:', text.slice(0, 200));
+      console.error('[JSON ERROR] Impossible de parser:', text.slice(0, 300));
       return res.status(500).json({ error: 'Réponse invalide, réessayez.' });
     }
 
+    console.log(`[SUCCESS] ${result.nom_entreprise} — score ${result.score_global}`);
     res.json(result);
 
   } catch (err) {
@@ -84,5 +105,4 @@ app.post('/api/analyze', limiter, async (req, res) => {
 });
 
 app.get('/health', (req, res) => res.json({ status: 'ok', service: 'Humio Audit API' }));
-
 app.listen(PORT, () => console.log(`🚀 Humio Audit API — port ${PORT}`));
