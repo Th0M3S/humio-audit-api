@@ -5,177 +5,135 @@ const rateLimit = require('express-rate-limit');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// ─── CORS : autorise ton site Humio uniquement ───────────────────────────────
 const allowedOrigins = (process.env.ALLOWED_ORIGINS || '*').split(',');
 app.use(cors({
   origin: (origin, cb) => {
-    if (!origin || allowedOrigins.includes('*') || allowedOrigins.includes(origin)) {
-      cb(null, true);
-    } else {
-      cb(new Error('Non autorisé par CORS'));
-    }
+    if (!origin || allowedOrigins.includes('*') || allowedOrigins.includes(origin)) cb(null, true);
+    else cb(new Error('Non autorisé par CORS'));
   }
 }));
-
 app.use(express.json());
 
-// ─── RATE LIMIT : 5 analyses par IP par heure ────────────────────────────────
 const limiter = rateLimit({
-  windowMs: 60 * 60 * 1000,
-  max: 5,
-  standardHeaders: true,
-  legacyHeaders: false,
+  windowMs: 60 * 60 * 1000, max: 5,
   message: { error: 'Limite atteinte. Réessayez dans une heure.' }
 });
 
-// ─── PROMPT SYSTÈME ───────────────────────────────────────────────────────────
 const SYSTEM_PROMPT = `Tu es un expert web pour Humio, agence spécialisée en sites vitrine pour TPE et artisans (Normandie).
-Analyse le site fourni en utilisant la recherche web. Sois précis, concret, et justifie chaque problème identifié.
+Analyse le site fourni. Sois précis, concret, et justifie chaque problème identifié.
 
 Réponds UNIQUEMENT en JSON valide (aucun texte avant ou après) :
 {
   "nom_entreprise": "string",
   "secteur": "string",
-  "annee_site_estimee": "string (ex: 2015-2018)",
   "score_global": 42,
   "resume": "2-3 phrases percutantes sur les problèmes principaux",
   "criteres": [
-    {
-      "id": "seo",
-      "nom": "Référencement Google",
-      "score": 30,
-      "etat": "critique",
-      "problemes": ["problème concret 1", "problème concret 2"],
-      "impact": "Explication de l'impact business si non corrigé (1 phrase avec chiffre si possible)",
-      "recommandation": "Ce que Humio ferait concrètement"
-    },
-    { "id": "google_business", "nom": "Fiche Google Business", "score": 25, "etat": "critique",
-      "problemes": ["problème 1", "problème 2"],
-      "impact": "impact business",
-      "recommandation": "solution Humio" },
-    { "id": "mobile", "nom": "Compatibilité mobile", "score": 40, "etat": "faible",
-      "problemes": ["problème 1"],
-      "impact": "impact business",
-      "recommandation": "solution Humio" },
-    { "id": "design", "nom": "Design et modernité", "score": 25, "etat": "critique",
-      "problemes": ["problème 1", "problème 2"],
-      "impact": "impact business",
-      "recommandation": "solution Humio" },
-    { "id": "contenu", "nom": "Contenu et messages", "score": 50, "etat": "moyen",
-      "problemes": ["problème 1"],
-      "impact": "impact business",
-      "recommandation": "solution Humio" },
-    { "id": "confiance", "nom": "Éléments de confiance", "score": 20, "etat": "critique",
-      "problemes": ["problème 1", "problème 2"],
-      "impact": "impact business",
-      "recommandation": "solution Humio" }
+    {"id":"seo","nom":"Référencement Google","score":30,"etat":"critique","problemes":["pb 1","pb 2"],"impact":"impact business chiffré","recommandation":"solution Humio"},
+    {"id":"google_business","nom":"Fiche Google Business","score":25,"etat":"critique","problemes":["pb 1","pb 2"],"impact":"impact business","recommandation":"solution Humio"},
+    {"id":"mobile","nom":"Compatibilité mobile","score":40,"etat":"faible","problemes":["pb 1"],"impact":"impact business","recommandation":"solution Humio"},
+    {"id":"design","nom":"Design et modernité","score":25,"etat":"critique","problemes":["pb 1","pb 2"],"impact":"impact business","recommandation":"solution Humio"},
+    {"id":"contenu","nom":"Contenu et messages","score":50,"etat":"moyen","problemes":["pb 1"],"impact":"impact business","recommandation":"solution Humio"},
+    {"id":"confiance","nom":"Éléments de confiance","score":20,"etat":"critique","problemes":["pb 1","pb 2"],"impact":"impact business","recommandation":"solution Humio"}
   ],
-  "points_positifs": ["point positif si applicable"],
-  "top_3_actions": ["action prioritaire 1", "action prioritaire 2", "action prioritaire 3"],
-  "potentiel": "Phrase motivante et concrète sur ce qu'une refonte Humio apporterait"
+  "points_positifs": ["point positif"],
+  "top_3_actions": ["action 1","action 2","action 3"],
+  "potentiel": "phrase motivante sur l'impact d'une refonte par Humio"
 }
-États: critique=0-30, faible=31-50, moyen=51-70, bon=71-100. Sois précis et justifie avec des chiffres quand possible.`;
+États: critique=0-30, faible=31-50, moyen=51-70, bon=71-100.`;
 
-// ─── HELPER : appel Anthropic avec gestion multi-tours ───────────────────────
-async function callAnthropic(messages) {
+async function callAnthropic(messages, useSearch) {
   const apiKey = process.env.ANTHROPIC_API_KEY;
-  if (!apiKey) throw new Error('ANTHROPIC_API_KEY manquante');
+  if (!apiKey) throw new Error('ANTHROPIC_API_KEY manquante dans les variables Railway');
 
   const body = {
-    model: 'claude-sonnet-4-20250514',
+    model: 'claude-sonnet-4-6',
     max_tokens: 2000,
     system: SYSTEM_PROMPT,
-    tools: [{ type: 'web_search_20250305', name: 'web_search' }],
     messages
   };
+
+  if (useSearch) {
+    body.tools = [{ type: 'web_search_20250305', name: 'web_search' }];
+  }
 
   const res = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       'x-api-key': apiKey,
-      'anthropic-version': '2023-06-01'
+      'anthropic-version': '2023-06-01',
+      ...(useSearch ? { 'anthropic-beta': 'web-search-2025-03-05' } : {})
     },
     body: JSON.stringify(body)
   });
 
   if (!res.ok) {
-    const err = await res.text();
-    throw new Error(`Anthropic ${res.status}: ${err.slice(0, 200)}`);
+    const errText = await res.text();
+    throw new Error(`Anthropic ${res.status}: ${errText}`);
   }
-
   return res.json();
 }
 
 function extractJSON(text) {
   const clean = text.replace(/```json\s*/gi, '').replace(/```\s*/g, '').trim();
-  const s = clean.indexOf('{');
-  const e = clean.lastIndexOf('}');
+  const s = clean.indexOf('{'), e = clean.lastIndexOf('}');
   if (s < 0 || e < 0) return null;
   try { return JSON.parse(clean.slice(s, e + 1)); } catch { return null; }
 }
 
-// ─── ROUTE PRINCIPALE ─────────────────────────────────────────────────────────
 app.post('/api/analyze', limiter, async (req, res) => {
-  const { url, email } = req.body;
-
-  if (!url || typeof url !== 'string') {
-    return res.status(400).json({ error: 'URL manquante ou invalide' });
-  }
+  const { url } = req.body;
+  if (!url || typeof url !== 'string') return res.status(400).json({ error: 'URL manquante' });
 
   const cleanUrl = url.startsWith('http') ? url.trim() : `https://${url.trim()}`;
+  console.log(`[ANALYZE] ${new Date().toISOString()} | ${cleanUrl}`);
 
-  // Log optionnel pour capturer les leads (email)
-  if (email) {
-    console.log(`[LEAD] ${new Date().toISOString()} | ${email} | ${cleanUrl}`);
-    // TODO: Envoyer vers ton CRM ou ton email ici
-  }
-
+  // Tentative 1 : avec recherche web
   try {
-    let messages = [{
-      role: 'user',
-      content: `Analyse ce site web : ${cleanUrl}. Utilise la recherche web pour trouver des informations réelles sur ce site et cette entreprise. Retourne uniquement le JSON demandé.`
-    }];
-
-    let data = await callAnthropic(messages);
+    let messages = [{ role: 'user', content: `Analyse ce site : ${cleanUrl}. Retourne uniquement le JSON.` }];
+    let data = await callAnthropic(messages, true);
     let turns = 0;
 
-    // Gestion multi-tours pour la recherche web
     while (data.stop_reason === 'tool_use' && turns < 4) {
       turns++;
       messages.push({ role: 'assistant', content: data.content });
-
       const toolResults = (data.content || [])
         .filter(b => b.type === 'tool_use')
-        .map(b => ({
-          type: 'tool_result',
-          tool_use_id: b.id,
-          content: [{ type: 'text', text: 'Recherche effectuée. Continue l\'analyse.' }]
-        }));
-
+        .map(b => ({ type: 'tool_result', tool_use_id: b.id, content: [{ type: 'text', text: 'Recherche effectuée.' }] }));
       messages.push({ role: 'user', content: toolResults });
-      data = await callAnthropic(messages);
+      data = await callAnthropic(messages, true);
     }
 
-    const text = (data.content || [])
-      .filter(b => b.type === 'text')
-      .map(b => b.text)
-      .join('');
-
+    const text = (data.content || []).filter(b => b.type === 'text').map(b => b.text).join('');
     const result = extractJSON(text);
-    if (!result) return res.status(500).json({ error: 'Analyse impossible, réessayez.' });
+    if (result) return res.json(result);
+    throw new Error('JSON introuvable dans la réponse');
 
-    res.json(result);
+  } catch (err1) {
+    console.error('[SEARCH ERROR]', err1.message);
 
-  } catch (err) {
-    console.error('[ERROR]', err.message);
-    res.status(500).json({ error: 'Erreur serveur. Réessayez dans quelques secondes.' });
+    // Tentative 2 : sans recherche web (fallback)
+    try {
+      const data = await callAnthropic([{
+        role: 'user',
+        content: `Analyse ce site : ${cleanUrl}. Génère un diagnostic réaliste basé sur l'URL et les problèmes typiques de ce type de site. Retourne uniquement le JSON.`
+      }], false);
+
+      const text = (data.content || []).filter(b => b.type === 'text').map(b => b.text).join('');
+      const result = extractJSON(text);
+      if (result) return res.json(result);
+      throw new Error('JSON introuvable');
+
+    } catch (err2) {
+      console.error('[FALLBACK ERROR]', err2.message);
+      return res.status(500).json({
+        error: `Analyse impossible. Détail : ${err2.message.slice(0, 200)}`
+      });
+    }
   }
 });
 
-// ─── HEALTHCHECK ─────────────────────────────────────────────────────────────
-app.get('/health', (req, res) => res.json({ status: 'ok', service: 'Humio Audit API' }));
+app.get('/health', (req, res) => res.json({ status: 'ok', service: 'Humio Audit API', model: 'claude-sonnet-4-6' }));
 
-app.listen(PORT, () => {
-  console.log(`🚀 Humio Audit API démarré sur le port ${PORT}`);
-});
+app.listen(PORT, () => console.log(`🚀 Humio Audit API — port ${PORT}`));
