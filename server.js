@@ -66,15 +66,17 @@ app.post('/api/analyze', limiter, async (req, res) => {
       headers: {
         'Content-Type': 'application/json',
         'x-api-key': apiKey,
-        'anthropic-version': '2023-06-01'
+        'anthropic-version': '2023-06-01',
+        'anthropic-beta': 'web-search-2025-03-05'
       },
       body: JSON.stringify({
         model: 'claude-sonnet-4-6',
-        max_tokens: 2000,
+        max_tokens: 4000,
+        tools: [{ type: 'web_search_20250305', name: 'web_search' }],
         system: PROMPT,
         messages: [{
           role: 'user',
-          content: `Analyse ce site : ${cleanUrl}. Rappel : réponds avec l'objet JSON uniquement, sans markdown ni backticks.`
+          content: `Visite et analyse ce site en naviguant dessus : ${cleanUrl}. Rappel : réponds avec l'objet JSON uniquement, sans markdown ni backticks.`
         }]
       })
     });
